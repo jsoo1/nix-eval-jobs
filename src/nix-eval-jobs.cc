@@ -19,6 +19,7 @@
 
 #include <nix/value-to-json.hh>
 
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
@@ -299,6 +300,9 @@ int main(int argc, char * * argv)
                              from{std::make_shared<AutoCloseFD>(std::move(toPipe.readSide))}
                             ]()
                             {
+                                auto tmpdir = createTempDir("", "nix-eval-jobs", true, true, S_IRWXU);
+                                setenv("XDG_CACHE_HOME", tmpdir.c_str(), 1);
+
                                 try {
                                     EvalState state(myArgs.searchPath, openStore());
                                     Bindings & autoArgs = *myArgs.getAutoArgs(state);
