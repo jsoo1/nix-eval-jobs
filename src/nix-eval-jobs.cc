@@ -138,6 +138,7 @@ static void worker(
             auto v = state.allocValue();
 
             state.autoCallFunction(autoArgs, *vRoot, *v);
+            state.forceValue(*v);
 
             if (v->type != tAttrs)
                 throw TypeError("root is of type '%s', expected a set", showType(*v));
@@ -148,7 +149,12 @@ static void worker(
 
             if (a == v->attrs->end()) throw Error("attribute '%s' not found", attrName);
 
-            if (auto drv = getDerivation(state, *a->value, false)) {
+            auto attrVal = state.allocValue();
+
+            state.autoCallFunction(autoArgs, *a->value, *attrVal);
+            state.forceValue(*attrVal);
+
+            if (auto drv = getDerivation(state, *attrVal, false)) {
 
                 // Workaround for nixos "systems"
                 //
@@ -156,12 +162,17 @@ static void worker(
                 // themselves derivations.
                 std::string system;
 
-                auto systemAttr = a->value->attrs->find(state.symbols.create("system"));
+                auto systemAttr = attrVal->attrs->find(state.symbols.create("system"));
 
                 if (systemAttr == a->value->attrs->end()) {
                     throw EvalError("derivation must have a 'system' attribute");
 
                 } else if (auto systemDrv = getDerivation(state, *systemAttr->value, false)) {
+                    auto systemV = state.allocValue();
+
+                    state.autoCallFunction(autoArgs, *systemAttr->value, *systemV);
+                    state.forceValue(*systemV);
+
                     system = systemDrv->querySystem();
 
                 } else {
@@ -204,20 +215,20 @@ static void worker(
 
             }
 
-            else if (v->type == tAttrs)
+            else if (attrVal->type == tAttrs)
               {
                 auto attrs = nlohmann::json::array();
                 StringSet ss;
-                for (auto & i : v->attrs->lexicographicOrder()) {
+                for (auto & i : attrVal->attrs->lexicographicOrder()) {
                     attrs.push_back(i->name);
                 }
                 reply["attrs"] = std::move(attrs);
             }
 
-            else if (v->type == tNull)
+            else if (attrVal->type == tNull)
                 ;
 
-            else throw TypeError("attribute '%s' is %s, which is not supported", attrName, showType(*v));
+            else throw TypeError("attribute '%s' is %s, which is not supported", attrName, showType(*attrVal));
 
         } catch (EvalError & e) {
             // Transmits the error we got from the previous evaluation
