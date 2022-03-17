@@ -111,18 +111,6 @@ static Value* releaseExprTopLevelValue(EvalState & state, Bindings & autoArgs) {
     return vRoot;
 }
 
-static void showPath_(std::vector<std::string> & path, std::ostringstream & dest) {
-    int size = path.size();
-
-    for (auto i = 0; i < size; i++) {
-        dest << "\"" << path[i] << "\"";
-
-        if (i != size - 1) {
-          dest << ".";
-        }
-    }
-}
-
 static nlohmann::json response(std::string & attrName) {
     nlohmann::json reply;
     reply["attr"] = attrName;
@@ -144,29 +132,11 @@ static void worker(
         auto s = readLine(from.get());
         if (s == "exit") break;
         if (!hasPrefix(s, "do ")) abort();
-        std::string msg(s, 3);
+        std::string attrName(s, 3);
 
-        debug("worker process %d at '%s'", getpid(), msg);
-
-        nlohmann::json::array_t msgJson = nlohmann::json::parse(msg);
-        std::vector<std::string> attrPath = {};
-
-        for (auto json : msgJson) {
-            if (!json.is_string()) {
-                throw TypeError("Unexpected message from coordinator: %s", msg);
-
-            } else {
-                attrPath.push_back(json);
-
-            }
-        }
+        debug("worker process %d at '%s'", getpid(), attrName);
 
         /* Evaluate it and send info back to the master. */
-
-        std::ostringstream attrNameS;
-        showPath_(attrPath, attrNameS);
-        auto attrName = attrNameS.str();
-
         try {
             auto v = state.allocValue();
 
@@ -176,30 +146,17 @@ static void worker(
             if (v->type != tAttrs)
                 throw TypeError("root is of type '%s', expected a set", showType(*v));
 
-            if (attrPath.empty()) throw Error("empty attribute path");
+            if (attrName.empty()) throw Error("empty attribute name");
+
+            auto a = v->attrs->find(state.symbols.create(attrName));
+
+            if (a == v->attrs->end())
+                throw EvalError("root has no attribute '%s'", attrName);
 
             auto attrVal = state.allocValue();
 
-            attrVal = v;
-
-            for (auto attrName : attrPath) {
-                auto a = attrVal->attrs->find(state.symbols.create(attrName));
-
-                if (a != attrVal->attrs->end()) {
-                    std::ostringstream oss;
-                    showPath_(attrPath, oss);
-                    throw Error("attribute '%s' not found along path %s", attrName, oss.str());
-                }
-
-                auto attrValTemp = state.allocValue();
-
-                state.autoCallFunction(autoArgs, *a->value, *attrValTemp);
-                state.forceValue(*attrValTemp);
-
-                attrVal = attrValTemp;
-
-            }
-
+            state.autoCallFunction(autoArgs, *a->value, *attrVal);
+            state.forceValue(*attrVal);
 
             DrvInfos drvs;
             getDerivations(state, *attrVal, "", autoArgs, drvs, false);
@@ -248,32 +205,11 @@ static void worker(
                 }
             }
 
-            else if (attrVal->type == tAttrs)
-              {
-                auto paths = nlohmann::json::array();
-                for (auto & i : attrVal->attrs->lexicographicOrder()) {
-                    auto attrs = nlohmann::json::array();
-                    for (auto & a : attrPath) {
-                      attrs.push_back(a);
-                    }
-
-                    attrs.push_back(i->name);
-
-                    paths.push_back(attrs);
-                }
-                auto reply = response(attrName);
-                reply["attrs"] = std::move(paths);
-
-                writeLine(to.get(), reply.dump());
-            }
-
             else if (attrVal->type == tNull)
                 ;
 
             else {
-                std::ostringstream oss;
-                showPath_(attrPath, oss);
-                throw TypeError("attribute %s is of type '%s', which is not supported", oss.str(), showType(*attrVal));
+                throw TypeError("attribute '%s' is of type '%s', which is not supported", attrName, showType(*attrVal));
             }
 
         } catch (EvalError & e) {
@@ -330,8 +266,8 @@ int main(int argc, char * * argv)
 
         struct State
         {
-            std::set<nlohmann::json::array_t> todo{};
-            std::set<nlohmann::json::array_t> active;
+            std::set<std::string> todo{};
+            std::set<std::string> active;
             std::exception_ptr exc;
         };
 
@@ -396,7 +332,7 @@ int main(int argc, char * * argv)
                     }
 
                     /* Wait for a job name to become available. */
-                    nlohmann::json::array_t attrPath = nlohmann::json::array();
+                    std::string attrPath;
 
                     while (true) {
                         checkInterrupt();
@@ -415,39 +351,16 @@ int main(int argc, char * * argv)
                     }
 
                     /* Tell the worker to evaluate it. */
-                    auto msg = nlohmann::json::array();
-
-                    for (auto p : attrPath) msg.push_back(p);
-
-                    writeLine(to.get(), "do " + msg.dump());
-
-                    /* Wait for the response. */
-                    auto respString = readLine(from.get());
-                    auto response = nlohmann::json::parse(respString);
+                    writeLine(to.get(), "do " + attrPath);
 
                     /* Handle the response. */
-                    nlohmann::json::array_t newAttrs = nlohmann::json::array();
-                    if (response.find("attrs") != response.end()) {
-                        for (auto & i : response["attrs"]) {
-                          if (i.is_array()) {
-                            newAttrs.push_back(i);
-                          } else {
-                            throw TypeError("Got an unexpected message from a worker: %s", response.dump());
-                          }
-                        }
-                    } else {
-                        auto state(state_.lock());
-                        std::cout << respString << "\n" << std::flush;
-                    }
+                    auto respString = readLine(from.get());
+                    auto response = nlohmann::json::parse(respString);
+                    auto state(state_.lock());
+                    std::cout << response << "\n" << std::flush;
 
-                    /* Add newly discovered job names to the queue. */
-                    {
-                        auto state(state_.lock());
-                        state->active.erase(attrPath);
-                        for (nlohmann::json::array_t s : newAttrs)
-                            state->todo.insert(s);
-                        wakeup.notify_all();
-                    }
+                    state->active.erase(attrPath);
+                    wakeup.notify_all();
                 }
             } catch (...) {
                 auto state(state_.lock());
@@ -464,10 +377,7 @@ int main(int argc, char * * argv)
         if (topLevelValue->type == tAttrs) {
           auto state(state_.lock());
           for (auto & a : topLevelValue->attrs->lexicographicOrder()) {
-            std::ostringstream oss;
-            oss << a->name;
-            nlohmann::json::array_t path = nlohmann::json::array({ oss.str() });
-            state->todo.insert(path);
+            state->todo.insert(a->name);
           }
         }
 
