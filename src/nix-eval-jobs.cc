@@ -141,6 +141,12 @@ static void showPath_(std::vector<std::string> & path, std::ostringstream & dest
     }
 }
 
+static nlohmann::json response(std::string & attrName) {
+    nlohmann::json reply;
+    reply["attr"] = attrName;
+    return reply;
+}
+
 static void worker(
     EvalState & state,
     Bindings & autoArgs,
@@ -212,10 +218,10 @@ static void worker(
         }
 
         /* Evaluate it and send info back to the master. */
-        nlohmann::json reply;
+
         std::ostringstream attrNameS;
         showPath_(attrPath, attrNameS);
-        reply["attr"] = attrNameS.str();
+        auto attrName = attrNameS.str();
 
         try {
             auto v = state.allocValue();
@@ -251,54 +257,61 @@ static void worker(
             }
 
 
+            DrvInfos drvs;
+            getDerivations(state, *attrVal, "", autoArgs, drvs, false);
 
-            if (auto drv = getDerivation(state, *attrVal, false)) {
-                std::string system = drv->querySystem();
+            if (!drvs.empty()) {
+                for (auto drv : drvs) {
+                    std::string system = drv.querySystem();
 
-                if (system == "unknown")
-                    throw EvalError("derivation must not have unknown system type");
+                    if (system == "unknown")
+                        throw EvalError("derivation must not have unknown system type");
 
-                auto drvPath = drv->queryDrvPath();
-                auto localStore = state.store.dynamic_pointer_cast<LocalFSStore>();
-                auto storePath = localStore->parseStorePath(drvPath);
-                auto outputs = drv->queryOutputs(false);
+                    auto drvPath = drv.queryDrvPath();
+                    auto localStore = state.store.dynamic_pointer_cast<LocalFSStore>();
+                    auto storePath = localStore->parseStorePath(drvPath);
+                    auto outputs = drv.queryOutputs(false);
 
-                reply["name"] = drv->queryName();
-                reply["system"] = system;
-                reply["drvPath"] = drvPath;
-                for (auto out : outputs){
-                    reply["outputs"][out.first] = out.second;
-                }
+                    auto reply = response(attrName);
 
-                if (myArgs.meta) {
-                    nlohmann::json meta;
-                    for (auto & name : drv->queryMetaNames()) {
-                      PathSet context;
-                      std::stringstream ss;
-
-                      auto metaValue = drv->queryMeta(name);
-                      // Skip non-serialisable types
-                      // TODO: Fix serialisation of derivations to store paths
-                      if (metaValue == 0) {
-                        continue;
-                      }
-
-                      printValueAsJSON(state, true, *metaValue, noPos, ss, context);
-                      nlohmann::json field = nlohmann::json::parse(ss.str());
-                      meta[name] = field;
+                    reply["name"] = drv.queryName();
+                    reply["system"] = system;
+                    reply["drvPath"] = drvPath;
+                    for (auto out : outputs){
+                        reply["outputs"][out.first] = out.second;
                     }
-                    reply["meta"] = meta;
-                }
 
-                /* Register the derivation as a GC root.  !!! This
-                   registers roots for jobs that we may have already
-                   done. */
-                if (gcRootsDir != "") {
-                    Path root = gcRootsDir + "/" + std::string(baseNameOf(drvPath));
-                    if (!pathExists(root))
-                        localStore->addPermRoot(storePath, root);
-                }
+                    if (myArgs.meta) {
+                        nlohmann::json meta;
+                        for (auto & name : drv.queryMetaNames()) {
+                          PathSet context;
+                          std::stringstream ss;
 
+                          auto metaValue = drv.queryMeta(name);
+                          // Skip non-serialisable types
+                          // TODO: Fix serialisation of derivations to store paths
+                          if (metaValue == 0) {
+                            continue;
+                          }
+
+                          printValueAsJSON(state, true, *metaValue, noPos, ss, context);
+                          nlohmann::json field = nlohmann::json::parse(ss.str());
+                          meta[name] = field;
+                        }
+                        reply["meta"] = meta;
+                    }
+
+                    writeLine(to.get(), reply.dump());
+
+                    /* Register the derivation as a GC root.  !!! This
+                       registers roots for jobs that we may have already
+                       done. */
+                    if (gcRootsDir != "") {
+                        Path root = gcRootsDir + "/" + std::string(baseNameOf(drvPath));
+                        if (!pathExists(root))
+                            localStore->addPermRoot(storePath, root);
+                    }
+                }
             }
 
             else if (attrVal->type() == nAttrs)
@@ -314,7 +327,10 @@ static void worker(
 
                     paths.push_back(attrs);
                 }
+                auto reply = response(attrName);
                 reply["attrs"] = std::move(paths);
+
+                writeLine(to.get(), reply.dump());
             }
 
             else if (attrVal->type() == nNull)
@@ -333,15 +349,17 @@ static void worker(
             showErrorInfo(oss, err, loggerSettings.showTrace.get());
             auto msg = oss.str();
 
+            auto reply = response(attrName);
+
             // Transmits the error we got from the previous evaluation
             // in the JSON output.
             reply["error"] = filterANSIEscapes(msg, true);
             // Don't forget to print it into the STDERR log, this is
             // what's shown in the Hydra UI.
             printError(e.msg());
-        }
 
-        writeLine(to.get(), reply.dump());
+            writeLine(to.get(), reply.dump());
+        }
 
         /* If our RSS exceeds the maximum, exit. The master will
            start a new process. */
@@ -443,7 +461,9 @@ int main(int argc, char * * argv)
                         continue;
                     } else if (s != "next") {
                         auto json = nlohmann::json::parse(s);
-                        throw Error("worker error: %s", (std::string) json["error"]);
+
+                        if (json.find("error") != json.end())
+                            throw Error("worker error: %s", (std::string) json["error"]);
                     }
 
                     /* Wait for a job name to become available. */
