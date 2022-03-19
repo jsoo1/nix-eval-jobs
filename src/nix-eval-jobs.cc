@@ -111,6 +111,12 @@ static Value* releaseExprTopLevelValue(EvalState & state, Bindings & autoArgs) {
     return vRoot;
 }
 
+static nlohmann::json response(std::string & attrName) {
+    nlohmann::json reply;
+    reply["attr"] = attrName;
+    return reply;
+}
+
 static void worker(
     EvalState & state,
     Bindings & autoArgs,
@@ -131,13 +137,11 @@ static void worker(
         debug("worker process %d at '%s'", getpid(), attrName);
 
         /* Evaluate it and send info back to the master. */
-        nlohmann::json reply;
-        reply["attr"] = attrName;
-
         try {
             auto v = state.allocValue();
 
             state.autoCallFunction(autoArgs, *vRoot, *v);
+            state.forceValue(*v);
 
             if (v->type != tAttrs)
                 throw TypeError("root is of type '%s', expected a set", showType(*v));
@@ -146,89 +150,95 @@ static void worker(
 
             auto a = v->attrs->find(state.symbols.create(attrName));
 
-            if (a == v->attrs->end()) throw Error("attribute '%s' not found", attrName);
+            if (a == v->attrs->end())
+                throw EvalError("root has no attribute '%s'", attrName);
 
-            if (auto drv = getDerivation(state, *a->value, false)) {
+            auto attrVal = state.allocValue();
 
-                // Workaround for nixos "systems"
-                //
-                //  ... which have "system" attributes that are
-                // themselves derivations.
-                std::string system;
+            state.autoCallFunction(autoArgs, *a->value, *attrVal);
+            state.forceValue(*attrVal);
 
-                auto systemAttr = a->value->attrs->find(state.symbols.create("system"));
+            //  Hacky workaround for nixos systems whose "system" attribute is a drv
+            std::optional<std::string> nixosSystemTuple = {};
 
-                if (systemAttr == a->value->attrs->end()) {
-                    throw EvalError("derivation must have a 'system' attribute");
+            auto systemAttr = attrVal->attrs->find(state.symbols.create("system"));
 
-                } else if (auto systemDrv = getDerivation(state, *systemAttr->value, false)) {
-                    system = systemDrv->querySystem();
+            if (auto nixosDrv = getDerivation(state, *systemAttr->value, false)) {
+                nixosSystemTuple = nixosDrv->querySystem();
+            }
 
-                } else {
-                    system = drv->querySystem();
+            DrvInfos drvs;
+            getDerivations(state, *attrVal, "", autoArgs, drvs, false);
 
-                }
+            if (!drvs.empty()) {
+                for (auto & drv : drvs) {
+                    std::string system;
 
-                if (system == "unknown")
-                    throw EvalError("derivation must not have unknown system type");
-
-                auto drvPath = drv->queryDrvPath();
-                auto outputs = drv->queryOutputs(false);
-
-                reply["name"] = drv->queryName();
-                reply["system"] = system;
-                reply["drvPath"] = drvPath;
-                for (auto out : outputs){
-                    reply["outputs"][out.first] = out.second;
-                }
-
-                if (myArgs.meta) {
-                    nlohmann::json meta;
-                    for (auto & name : drv->queryMetaNames()) {
-                      PathSet context;
-                      std::stringstream ss;
-
-                      auto metaValue = drv->queryMeta(name);
-                      // Skip non-serialisable types
-                      // TODO: Fix serialisation of derivations to store paths
-                      if (metaValue == 0) {
-                        continue;
-                      }
-
-                      printValueAsJSON(state, true, *metaValue, ss, context);
-                      nlohmann::json field = nlohmann::json::parse(ss.str());
-                      meta[name] = field;
+                    if (auto sys = nixosSystemTuple) {
+                        system = *sys;
+                    } else {
+                        system = drv.querySystem();
                     }
-                    reply["meta"] = meta;
-                }
 
+                    if (system == "unknown")
+                        throw EvalError("derivation must not have unknown system type");
+
+                    auto drvPath = drv.queryDrvPath();
+                    auto outputs = drv.queryOutputs(false);
+
+                    auto reply = response(attrName);
+
+                    reply["name"] = drv.queryName();
+                    reply["system"] = system;
+                    reply["drvPath"] = drvPath;
+                    for (auto out : outputs){
+                        reply["outputs"][out.first] = out.second;
+                    }
+
+                    if (myArgs.meta) {
+                        nlohmann::json meta;
+                        for (auto & name : drv.queryMetaNames()) {
+                          PathSet context;
+                          std::stringstream ss;
+
+                          auto metaValue = drv.queryMeta(name);
+                          // Skip non-serialisable types
+                          // TODO: Fix serialisation of derivations to store paths
+                          if (metaValue == 0) {
+                            continue;
+                          }
+
+                          printValueAsJSON(state, true, *metaValue, ss, context);
+                          nlohmann::json field = nlohmann::json::parse(ss.str());
+                          meta[name] = field;
+                        }
+                        reply["meta"] = meta;
+                    }
+
+                    writeLine(to.get(), reply.dump());
+
+                }
             }
 
-            else if (v->type == tAttrs)
-              {
-                auto attrs = nlohmann::json::array();
-                StringSet ss;
-                for (auto & i : v->attrs->lexicographicOrder()) {
-                    attrs.push_back(i->name);
-                }
-                reply["attrs"] = std::move(attrs);
-            }
-
-            else if (v->type == tNull)
+            else if (attrVal->type == tNull)
                 ;
 
-            else throw TypeError("attribute '%s' is %s, which is not supported", attrName, showType(*v));
+            else {
+                throw TypeError("attribute '%s' is of type '%s', which is not supported", attrName, showType(*attrVal));
+            }
 
         } catch (EvalError & e) {
+            auto reply = response(attrName);
+
             // Transmits the error we got from the previous evaluation
             // in the JSON output.
             reply["error"] = filterANSIEscapes(e.msg(), true);
             // Don't forget to print it into the STDERR log, this is
             // what's shown in the Hydra UI.
             printError(e.msg());
-        }
 
-        writeLine(to.get(), reply.dump());
+            writeLine(to.get(), reply.dump());
+        }
 
         /* If our RSS exceeds the maximum, exit. The master will
            start a new process. */
@@ -331,7 +341,9 @@ int main(int argc, char * * argv)
                         continue;
                     } else if (s != "next") {
                         auto json = nlohmann::json::parse(s);
-                        throw Error("worker error: %s", (std::string) json["error"]);
+
+                        if (json.find("error") != json.end())
+                            throw Error("worker error: %s", (std::string) json["error"]);
                     }
 
                     /* Wait for a job name to become available. */
@@ -356,30 +368,14 @@ int main(int argc, char * * argv)
                     /* Tell the worker to evaluate it. */
                     writeLine(to.get(), "do " + attrPath);
 
-                    /* Wait for the response. */
+                    /* Handle the response. */
                     auto respString = readLine(from.get());
                     auto response = nlohmann::json::parse(respString);
+                    auto state(state_.lock());
+                    std::cout << response << "\n" << std::flush;
 
-                    /* Handle the response. */
-                    StringSet newAttrs;
-                    if (response.find("attrs") != response.end()) {
-                        for (auto & i : response["attrs"]) {
-                            auto s = (attrPath.empty() ? "" : attrPath + ".") + (std::string) i;
-                            newAttrs.insert(s);
-                        }
-                    } else {
-                        auto state(state_.lock());
-                        std::cout << respString << "\n" << std::flush;
-                    }
-
-                    /* Add newly discovered job names to the queue. */
-                    {
-                        auto state(state_.lock());
-                        state->active.erase(attrPath);
-                        for (auto & s : newAttrs)
-                            state->todo.insert(s);
-                        wakeup.notify_all();
-                    }
+                    state->active.erase(attrPath);
+                    wakeup.notify_all();
                 }
             } catch (...) {
                 auto state(state_.lock());
