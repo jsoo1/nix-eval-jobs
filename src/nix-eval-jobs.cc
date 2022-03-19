@@ -211,12 +211,27 @@ static void worker(
             state.autoCallFunction(autoArgs, *a->value, *attrVal);
             state.forceValue(*attrVal);
 
+            //  Hacky workaround for nixos systems whose "system" attribute is a drv
+            std::optional<std::string> nixosSystemTuple = {};
+
+            auto systemAttr = attrVal->attrs->find(state.symbols.create("system"));
+
+            if (auto nixosDrv = getDerivation(state, *systemAttr->value, false)) {
+                nixosSystemTuple = nixosDrv->querySystem();
+            }
+
             DrvInfos drvs;
             getDerivations(state, *attrVal, "", autoArgs, drvs, false);
 
             if (!drvs.empty()) {
                 for (auto drv : drvs) {
-                    std::string system = drv.querySystem();
+                    std::string system;
+
+                    if (auto sys = nixosSystemTuple) {
+                        system = *sys;
+                    } else {
+                        system = drv.querySystem();
+                    }
 
                     if (system == "unknown")
                         throw EvalError("derivation must not have unknown system type");
