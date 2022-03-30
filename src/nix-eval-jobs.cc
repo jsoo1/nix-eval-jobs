@@ -294,13 +294,13 @@ int main(int argc, char * * argv)
         auto handler = [&]()
         {
             try {
-                pid_t pid = -1;
                 AutoCloseFD from, to;
 
                 while (true) {
+                    std::optional<Pid> pid;
 
                     /* Start a new worker process if necessary. */
-                    if (pid == -1) {
+                    if (!pid.has_value()) {
                         Pipe toPipe, fromPipe;
                         toPipe.create();
                         fromPipe.create();
@@ -313,6 +313,7 @@ int main(int argc, char * * argv)
                                 auto tmpdir = createTempDir("", "nix-eval-jobs", true, true, S_IRWXU);
                                 setenv("XDG_CACHE_HOME", tmpdir.c_str(), 1);
 
+                                debug("created worker process %d", getpid());
                                 try {
                                     EvalState state(myArgs.searchPath, openStore());
                                     Bindings & autoArgs = *myArgs.getAutoArgs(state);
@@ -331,13 +332,12 @@ int main(int argc, char * * argv)
                             ProcessOptions { .allowVfork = false });
                         from = std::move(fromPipe.readSide);
                         to = std::move(toPipe.writeSide);
-                        debug("created worker process %d", pid);
                     }
 
                     /* Check whether the existing worker process is still there. */
                     auto s = readLine(from.get());
                     if (s == "restart") {
-                        pid = -1;
+                        pid = std::nullopt;
                         continue;
                     } else if (s != "next") {
                         auto json = nlohmann::json::parse(s);
