@@ -310,9 +310,6 @@ int main(int argc, char * * argv)
                              from{std::make_shared<AutoCloseFD>(std::move(toPipe.readSide))}
                             ]()
                             {
-                                auto tmpdir = createTempDir("", "nix-eval-jobs", true, true, S_IRWXU);
-                                setenv("XDG_CACHE_HOME", tmpdir.c_str(), 1);
-
                                 debug("created worker process %d", getpid());
                                 try {
                                     EvalState state(myArgs.searchPath, openStore());
