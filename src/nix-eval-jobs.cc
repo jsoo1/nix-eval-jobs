@@ -452,16 +452,75 @@ int main(int argc, char * * argv)
             }
         };
 
-        EvalState initialState(myArgs.searchPath, openStore());
-        Bindings & autoArgs = *myArgs.getAutoArgs(initialState);
+        /* Collect initial attributes to evaluate */
+        {
+            AutoCloseFD from, to;
+            Pipe toPipe, fromPipe;
+            toPipe.create();
+            fromPipe.create();
+            Pid p = startProcess(
+                [&,
+                 to{std::make_shared<AutoCloseFD>(std::move(fromPipe.writeSide))},
+                 from{std::make_shared<AutoCloseFD>(std::move(toPipe.readSide))}
+                ]()
+                {
+                    debug("created initial attribute collection process %d", getpid());
 
-        auto topLevelValue = releaseExprTopLevelValue(initialState, autoArgs);
+                    try {
+                        EvalState state(myArgs.searchPath, openStore());
+                        Bindings & autoArgs = *myArgs.getAutoArgs(state);
 
-        if (topLevelValue->type() == nAttrs) {
-          auto state(state_.lock());
-          for (auto & a : topLevelValue->attrs->lexicographicOrder()) {
-            state->todo.insert(a->name);
-          }
+                        auto vRoot = releaseExprTopLevelValue(state, autoArgs);
+
+                        if (vRoot->type() != nAttrs)
+                            throw TypeError("top level value is a '%s', expected an attribute set", showType(*vRoot));
+
+                        nlohmann::json reply;
+
+                        try {
+                            std::vector<std::string> attrs;
+                            for (auto & a : vRoot->attrs->lexicographicOrder())
+                                attrs.push_back(a->name);
+
+
+                            reply["attrs"] = attrs;
+
+                            writeLine(to->get(), reply.dump());
+
+                        } catch (EvalError & e) {
+                            reply["error"] = filterANSIEscapes(e.msg(), true);
+                            printError(e.msg());
+
+                        }
+                        writeLine(to->get(), reply.dump());
+
+                    } catch (Error & e) {
+                        nlohmann::json err;
+                        auto msg = e.msg();
+                        err["error"] = filterANSIEscapes(msg, true);
+                        printError(msg);
+                        writeLine(to->get(), err.dump());
+                    }
+                },
+                ProcessOptions { .allowVfork = false });
+            from = std::move(fromPipe.readSide);
+            to = std::move(toPipe.writeSide);
+
+            auto s = readLine(from.get());
+            auto json = nlohmann::json::parse(s);
+
+            if (json.find("error") != json.end()) {
+                throw Error("getting initial attributes: %s", (std::string) json["error"]);
+
+            } else if (json.find("attrs") != json.end()) {
+                auto state(state_.lock());
+                for (std::string a : json["attrs"])
+                    state->todo.insert(a);
+
+            } else {
+                throw Error("expected object with \"error\" or \"attrs\", got: %s", s);
+
+            }
         }
 
         std::vector<std::thread> threads;
