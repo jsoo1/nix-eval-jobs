@@ -452,7 +452,11 @@ int main(int argc, char * * argv)
             }
         };
 
-        /* Collect initial attributes to evaluate */
+        /* Collect initial attributes to evaluate. This must be done
+           in a separate fork to avoid spawning a download in the
+           parent process. If that happens, worker processes will try
+           to enqueue downloads on their own download threads (which
+           will not exist). */
         {
             AutoCloseFD from, to;
             Pipe toPipe, fromPipe;
