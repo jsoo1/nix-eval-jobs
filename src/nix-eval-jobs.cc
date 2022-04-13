@@ -466,41 +466,33 @@ int main(int argc, char * * argv)
                 {
                     debug("created initial attribute collection process %d", getpid());
 
+                    nlohmann::json reply;
+
                     try {
                         EvalState state(myArgs.searchPath, openStore());
                         Bindings & autoArgs = *myArgs.getAutoArgs(state);
 
                         auto vRoot = releaseExprTopLevelValue(state, autoArgs);
 
-                        if (vRoot->type() != nAttrs)
-                            throw TypeError("top level value is a '%s', expected an attribute set", showType(*vRoot));
+                        if (vRoot->type() != nAttrs) {
+                            std::stringstream ss;
+                            ss << "top level value is '" << showType(*vRoot) << "', expected an attribute set";
 
-                        nlohmann::json reply;
-
-                        try {
+                            reply["error"] = ss.str();
+                        } else {
                             std::vector<std::string> attrs;
                             for (auto & a : vRoot->attrs->lexicographicOrder())
                                 attrs.push_back(a->name);
 
-
                             reply["attrs"] = attrs;
-
-                            writeLine(to->get(), reply.dump());
-
-                        } catch (EvalError & e) {
-                            reply["error"] = filterANSIEscapes(e.msg(), true);
-                            printError(e.msg());
-
                         }
-                        writeLine(to->get(), reply.dump());
-
                     } catch (Error & e) {
-                        nlohmann::json err;
                         auto msg = e.msg();
-                        err["error"] = filterANSIEscapes(msg, true);
+                        reply["error"] = filterANSIEscapes(msg, true);
                         printError(msg);
-                        writeLine(to->get(), err.dump());
                     }
+
+                    writeLine(to->get(), reply.dump());
                 },
                 ProcessOptions { .allowVfork = false });
             from = std::move(fromPipe.readSide);
