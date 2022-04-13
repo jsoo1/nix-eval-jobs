@@ -365,10 +365,10 @@ int main(int argc, char * * argv)
         auto handler = [&]()
         {
             try {
+                std::optional<Pid> pid;
                 AutoCloseFD from, to;
 
                 while (true) {
-                    std::optional<Pid> pid;
 
                     /* Start a new worker process if necessary. */
                     if (!pid.has_value()) {
