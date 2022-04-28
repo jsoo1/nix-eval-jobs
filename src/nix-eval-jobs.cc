@@ -18,6 +18,7 @@
 #include "job.hh"
 
 using namespace nix;
+using namespace nlohmann;
 
 using namespace nix_eval_jobs;
 
@@ -105,7 +106,7 @@ static void worker(MyArgs & myArgs, EvalState &state,
 
         debug("worker process %d at '%s'", getpid(), pathStr);
 
-        nlohmann::json reply;
+        json reply;
 
         /* Evaluate it and send info back to the collector. */
         try {
@@ -170,8 +171,8 @@ static void worker(MyArgs & myArgs, EvalState &state,
 
 struct State
 {
-    std::set<nlohmann::json> todo{};
-    std::set<nlohmann::json> active;
+    std::set<json> todo{json::array()};
+    std::set<json> active;
     std::exception_ptr exc;
 };
 
@@ -190,13 +191,13 @@ void collector(Sync<State> & state_, std::condition_variable & wakeup) {
                 proc_ = std::nullopt;
                 continue;
             } else if (s != "next") {
-                auto json = nlohmann::json::parse(s);
+                auto json = json::parse(s);
                 if (json.find("error") != json.end())
                     throw Error("worker error: %s", (std::string) json["error"]);
             }
 
             /* Wait for a job name to become available. */
-            nlohmann::json accessor;
+            json accessor;
 
             while (true) {
                 checkInterrupt();
@@ -219,13 +220,13 @@ void collector(Sync<State> & state_, std::condition_variable & wakeup) {
 
             /* Wait for the response. */
             auto respString = readLine(proc->from.get());
-            auto response = nlohmann::json::parse(respString);
+            auto response = json::parse(respString);
 
             if (response.find("children") != response.end()) {
                 if (response.find("path") != response.end()) {
                     try {
-                        std::vector<nlohmann::json> children = response["children"];
-                        std::vector<nlohmann::json> path = response["path"];
+                        std::vector<json> children = response["children"];
+                        std::vector<json> path = response["path"];
 
                         auto state(state_.lock());
                         for (auto & child : children) {
@@ -233,7 +234,7 @@ void collector(Sync<State> & state_, std::condition_variable & wakeup) {
                             state->todo.insert(path);
                             path.pop_back();
                         }
-                    } catch (nlohmann::json::exception & e) {
+                    } catch (json::exception & e) {
                         throw EvalError("expected an array of children and a path from worker, got %s", response.dump());
                     }
 
@@ -258,36 +259,6 @@ void collector(Sync<State> & state_, std::condition_variable & wakeup) {
         auto state(state_.lock());
         state->exc = std::current_exception();
         wakeup.notify_all();
-    }
-}
-
-void initState(Sync<State> & state_) {
-    /* Collect initial attributes to evaluate. This must be done in a
-       separate fork to avoid spawning a download in the parent
-       process. If that happens, worker processes will try to enqueue
-       downloads on their own download threads (which will not
-       exist). Then the worker processes will hang forever waiting for
-       downloads.
-    */
-    auto proc = Proc(myArgs, initialAccessorCollector);
-
-    auto s = readLine(proc.from.get());
-    auto json = nlohmann::json::parse(s);
-
-    if (json.find("error") != json.end()) {
-        throw Error("getting initial attributes: %s", (std::string) json["error"]);
-
-    } else if (json.find("children") != json.end()) {
-        auto state(state_.lock());
-        for (auto a : json["children"])
-            state->todo.insert(std::vector({a}));
-
-    } else if (json.find("drvPath") != json.end()) {
-        std::cout << json.dump() << "\n" << std::flush;
-
-    } else {
-        throw Error("expected object with \"error\", \"children\", or a derivation, got: %s", s);
-
     }
 }
 
@@ -331,7 +302,6 @@ int main(int argc, char * * argv)
         }
 
         Sync<State> state_;
-        initState(state_);
 
         /* Start a collector thread per worker process. */
         std::vector<std::thread> threads;

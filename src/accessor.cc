@@ -1,4 +1,5 @@
 #include <nix/config.h>
+#include <nix/attr-path.hh>
 #include <nix/eval.hh>
 #include <nlohmann/json.hpp>
 
@@ -10,8 +11,10 @@ using namespace nix;
 
 namespace nix_eval_jobs {
 
+using json = nlohmann::json;
+
 /* Parse an accessor from json, the introduction rule. */
-static std::unique_ptr<Accessor> accessorFromJson(const nlohmann::json & json) {
+static std::unique_ptr<Accessor> accessorFromJson(const json & json) {
     try {
         return std::make_unique<Index>(json);
     } catch (...) {
@@ -25,7 +28,7 @@ static std::unique_ptr<Accessor> accessorFromJson(const nlohmann::json & json) {
 
 /* Accessor */
 
-Index::Index(const nlohmann::json & json) {
+Index::Index(const json & json) {
     try {
         val = json;
     } catch (...)  {
@@ -33,7 +36,7 @@ Index::Index(const nlohmann::json & json) {
     }
 }
 
-Name::Name(const nlohmann::json & json) {
+Name::Name(const json & json) {
     try {
         val = json;
         if (val.empty()) throw EvalError("empty attribute name");
@@ -44,53 +47,69 @@ Name::Name(const nlohmann::json & json) {
 
 /* toJson : Accessor -> json */
 
-nlohmann::json Name::toJson() {
+json Name::toJson() {
     return val;
 }
 
-nlohmann::json Index::toJson() {
+json Index::toJson() {
     return val;
 }
 
 /* AccessorPath */
 
 AccessorPath::AccessorPath(std::string & s) {
-    nlohmann::json json;
+    json intermediate;
     try {
-        json = nlohmann::json::parse(s);
+        intermediate = json::parse(s);
 
-    } catch (nlohmann::json::exception & e) {
+    } catch (json::exception & e) {
         throw TypeError("error parsing accessor path json: %s", s);
     }
 
     try {
-        std::vector<nlohmann::json> vec = json;
+        std::vector<json> vec = intermediate;
         for (auto j : vec)
             this->path.push_back(accessorFromJson(j));
 
-    } catch (nlohmann::json::exception & e) {
-        throw TypeError("could not make an accessor path out of json, expected a list of accessors: %s", json.dump());
+    } catch (json::exception & e) {
+        throw TypeError("could not make an accessor path out of json, expected a list of accessors: %s", intermediate.dump());
     }
+}
+
+/* Make an AttrPath out of AccessorPath findAlongAttrPath */
+
+static std::string accessorPathToAttrPath(AccessorPath & accessors) {
+    std::stringstream ss;
+
+    auto begin = accessors.path.begin();
+    auto end = accessors.path.end();
+
+    if (begin != end) {
+        ss << begin->get()->toJson();
+        ++begin;
+    }
+
+    while (begin != end) {
+        ss << "." << begin->get()->toJson();
+        ++begin;
+    }
+
+    return ss.str();
 }
 
 /* walk : AccessorPath -> EvalState -> Bindings -> Value -> Job */
 
 std::unique_ptr<Job> AccessorPath::walk(MyArgs & myArgs, EvalState & state, Bindings & autoArgs, Value & vRoot) {
-    Value * v = &vRoot;
-
-    for (auto & a : path)
-        v = a->getIn(state, autoArgs, *v);
-
-    auto vRes = state.allocValue();
-    state.autoCallFunction(autoArgs, *v, *vRes);
+    auto [vRes, pos] =
+        findAlongAttrPath(state, accessorPathToAttrPath(*this), autoArgs, vRoot);
 
     return getJob(myArgs, state, autoArgs, *vRes);
 }
 
 /* toJson : ToJson -> json */
 
-nlohmann::json AccessorPath::toJson() {
-    std::vector<nlohmann::json> res;
+json AccessorPath::toJson() {
+    std::vector<json> res;
     for (auto & a : path)
         res.push_back(a->toJson());
 
