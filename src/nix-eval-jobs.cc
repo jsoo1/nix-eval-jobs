@@ -181,9 +181,8 @@ void collector(Sync<State> & state_, std::condition_variable & wakeup) {
 
         while (true) {
 
-            auto proc = proc_.has_value()
-                ? std::move(proc_.value())
-                : std::make_unique<Proc>(myArgs, worker);
+            auto proc = proc_.has_value() ? std::move(proc_.value())
+                                          : std::make_unique<Proc>(myArgs, worker);
 
             /* Check whether the existing worker process is still there. */
             auto s = readLine(proc->from.get());
@@ -338,7 +337,7 @@ int main(int argc, char * * argv)
         std::vector<std::thread> threads;
         std::condition_variable wakeup;
         for (size_t i = 0; i < myArgs.nrWorkers; i++)
-            threads.emplace_back(std::thread([&]() {
+            threads.emplace_back(std::thread([&] {
                 collector(state_, wakeup);
             }));
 
