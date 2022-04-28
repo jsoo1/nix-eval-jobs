@@ -106,40 +106,21 @@ static void worker(MyArgs & myArgs, EvalState &state,
 
         debug("worker process %d at '%s'", getpid(), pathStr);
 
-        json reply;
-
         /* Evaluate it and send info back to the collector. */
         try {
             auto path = AccessorPath(pathStr);
 
-            reply = nlohmann::json{ { "path", path.toJson() } };
+            auto pathJson = json{ { "path", path.toJson() } };
 
-            else if (v->type() == nAttrs) {
-                auto attrs = nlohmann::json::array();
-                bool recurse =
-                    path.size() == 0; // Dont require `recurseForDerivations =
-                                      // true;` for top-level attrset
+            auto job = path.walk(myArgs, state, autoArgs, *vRoot);
 
-                for (auto &i : v->attrs->lexicographicOrder()) {
-                    std::string name(i->name);
-                    attrs.push_back(name);
+            for (auto & res : job->eval(myArgs, state)) {
+              auto reply = pathJson;
 
-                    if (name == "recurseForDerivations") {
-                        auto attrv =
-                            v->attrs->get(state.sRecurseForDerivations);
-                        recurse = state.forceBool(*attrv->value, *attrv->pos);
-                    }
-                }
-                if (recurse)
-                    reply["attrs"] = std::move(attrs);
-                else
-                    reply["attrs"] = nlohmann::json::array();
+              reply.update(res->toJson());
+
+              writeLine(to.get(), reply.dump());
             }
-
-            else if (v->type() == nNull)
-                ;
-
-            reply.update(res->toJson());
 
         } catch (EvalError &e) {
             auto err = e.info();
@@ -150,13 +131,13 @@ static void worker(MyArgs & myArgs, EvalState &state,
 
             // Transmits the error we got from the previous evaluation
             // in the JSON output.
-            reply["error"] = filterANSIEscapes(msg, true);
+            auto reply = json{ { "error", filterANSIEscapes(msg, true) } } ;
             // Don't forget to print it into the STDERR log, this is
             // what's shown in the Hydra UI.
             printError(e.msg());
-        }
 
-        writeLine(to.get(), reply.dump());
+            writeLine(to.get(), reply.dump());
+        }
 
         /* If our RSS exceeds the maximum, exit. The collector will
            start a new process. */
