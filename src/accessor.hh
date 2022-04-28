@@ -3,6 +3,7 @@
 #include <nix/eval.hh>
 #include <nlohmann/json.hpp>
 
+using json = nlohmann::json;
 using namespace nix;
 
 namespace nix_eval_jobs {
@@ -18,23 +19,28 @@ struct MyArgs;
  */
 class Accessor {
 public:
-    virtual nlohmann::json toJson() = 0;
+    virtual json toJson() = 0;
+    virtual std::unique_ptr<Accessor> clone() = 0;
     virtual ~Accessor() { }
 };
 
 /* An index into a list */
 struct Index : Accessor {
     unsigned long val;
-    Index(const nlohmann::json & json);
-    nlohmann::json toJson() override;
+    Index(const json & json);
+    Index(const Index & that);
+    std::unique_ptr<Accessor> clone() override;
+    json toJson() override;
     ~Index() { }
 };
 
 /* An attribute name in an attrset */
 struct Name : Accessor {
     std::string val;
-    Name(const nlohmann::json & json);
- nlohmann::json toJson() override;
+    Name(const json & json);
+    Name(const Name & that);
+    std::unique_ptr<Accessor> clone() override;
+    json toJson() override;
     ~Name() { }
 };
 
@@ -44,7 +50,7 @@ struct AccessorPath {
     AccessorPath(std::string & s);
     /* walk : AccessorPath -> EvalState -> Bindings -> Value -> Job */
     std::unique_ptr<Job> walk(MyArgs & myArgs, EvalState & state, Bindings & autoArgs, Value & vRoot);
-    nlohmann::json toJson();
+    json toJson();
     ~AccessorPath() { }
 };
 

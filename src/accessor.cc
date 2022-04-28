@@ -9,9 +9,9 @@
 
 using namespace nix;
 
-namespace nix_eval_jobs {
-
 using json = nlohmann::json;
+
+namespace nix_eval_jobs {
 
 /* Parse an accessor from json, the introduction rule. */
 static std::unique_ptr<Accessor> accessorFromJson(const json & json) {
@@ -36,6 +36,10 @@ Index::Index(const json & json) {
     }
 }
 
+Index::Index(const Index & that) {
+    this->val = that.val;
+}
+
 Name::Name(const json & json) {
     try {
         val = json;
@@ -45,6 +49,18 @@ Name::Name(const json & json) {
     }
 }
 
+Name::Name(const Name & that) {
+    this->val = that.val;
+}
+
+/* clone : Accessor -> Accessor */
+std::unique_ptr<Accessor> Index::clone() {
+    return std::make_unique<Index>(*this);
+}
+
+std::unique_ptr<Accessor> Name::clone() {
+    return std::make_unique<Name>(*this);
+}
 /* toJson : Accessor -> json */
 
 json Name::toJson() {
