@@ -106,4 +106,6 @@ struct MyArgs : MixEvalArgs, MixCommonArgs
 #pragma clang diagnostic warning "-Wnon-virtual-dtor"
 #endif
 
+inline MyArgs myArgs;
+
 }

@@ -19,12 +19,12 @@ namespace nix_eval_jobs {
 
 /* Job */
 
-Drvs::Drvs(MyArgs & myArgs, EvalState & state, Bindings & autoArgs, Value & v) {
+Drvs::Drvs(EvalState & state, Bindings & autoArgs, Value & v) {
     DrvInfos drvInfos;
     getDerivations(state, v, "", autoArgs, drvInfos, false);
 
     for (auto & drvInfo : drvInfos)
-        this->drvs.push_back(Drv(myArgs, state, drvInfo));
+        this->drvs.push_back(Drv(state, drvInfo));
 
 }
 
@@ -32,7 +32,7 @@ Drvs::Drvs(const Drvs & that) {
     this->drvs = that.drvs;
 }
 
-Drv::Drv(MyArgs & myArgs, EvalState & state, DrvInfo & drvInfo) {
+Drv::Drv(EvalState & state, DrvInfo & drvInfo) {
     if (drvInfo.querySystem() == "unknown")
         throw EvalError("derivation must have a 'system' attribute");
 
@@ -119,7 +119,7 @@ std::vector<std::unique_ptr<Accessor>> JobList::children() {
 
 /* eval : Job -> EvalState -> JobEvalResult */
 
-JobEvalResults Drvs::eval(MyArgs & myArgs, EvalState & state) {
+JobEvalResults Drvs::eval(EvalState & state) {
     /* Register the derivation as a GC root.  !!! This
        registers roots for jobs that we may have already
        done. */
@@ -142,13 +142,13 @@ JobEvalResults Drvs::eval(MyArgs & myArgs, EvalState & state) {
     return res;
 }
 
-JobEvalResults JobAttrs::eval(MyArgs & myArgs, EvalState & state) {
+JobEvalResults JobAttrs::eval(EvalState & state) {
     JobEvalResults res;
     res.push_back(JobChildren(*this).clone());
     return res;
 }
 
-JobEvalResults JobList::eval(MyArgs & myArgs, EvalState & state) {
+JobEvalResults JobList::eval(EvalState & state) {
     JobEvalResults res;
     res.push_back(JobChildren(*this).clone());
     return res;

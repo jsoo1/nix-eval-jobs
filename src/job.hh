@@ -55,7 +55,7 @@ typedef std::vector<std::unique_ptr<JobEvalResult>> JobEvalResults;
 class Job {
 public:
     /* eval : Job -> EvalState -> vector JobEvalResult */
-    virtual JobEvalResults eval(MyArgs & myArgs, EvalState & state) = 0;
+    virtual JobEvalResults eval(EvalState & state) = 0;
     virtual ~Job() { };
 };
 
@@ -66,7 +66,7 @@ struct Drv : JobEvalResult {
     std::string drvPath;
     std::map<std::string, std::string> outputs;
     std::optional<json> meta;
-    Drv(MyArgs & myArgs, EvalState & state, DrvInfo & drvInfo);
+    Drv(EvalState & state, DrvInfo & drvInfo);
     Drv(const Drv & that) = default;
     std::unique_ptr<JobEvalResult> clone() override;
     json toJson() override;
@@ -78,9 +78,9 @@ struct Drv : JobEvalResult {
  */
 struct Drvs : Job {
     std::vector<Drv> drvs;
-    Drvs(MyArgs & myArgs, EvalState & state, Bindings & autoArgs, Value & v);
+    Drvs(EvalState & state, Bindings & autoArgs, Value & v);
     Drvs(const Drvs & that);
-    JobEvalResults eval(MyArgs & myArgs, EvalState & state) override;
+    JobEvalResults eval(EvalState & state) override;
     ~Drvs() { };
 };
 
@@ -109,7 +109,7 @@ struct JobAttrs : Job, HasChildren {
     Value * v;
     JobAttrs(EvalState & state, Bindings & autoArgs, Value & vIn);
     std::vector<std::unique_ptr<Accessor>> children() override;
-    JobEvalResults eval(MyArgs & myArgs, EvalState & state) override;
+    JobEvalResults eval(EvalState & state) override;
     ~JobAttrs() { };
 };
 
@@ -118,7 +118,7 @@ struct JobList : Job, HasChildren {
     Value * v;
     JobList(EvalState & state, Bindings & autoArgs, Value & vIn);
     std::vector<std::unique_ptr<Accessor>> children() override;
-    JobEvalResults eval(MyArgs & myArgs, EvalState & state) override;
+    JobEvalResults eval(EvalState & state) override;
     ~JobList() { };
 };
 
@@ -129,9 +129,9 @@ struct JobList : Job, HasChildren {
 #elif __clang__
 #pragma clang diagnostic ignored "-Wunused-function"
 #endif
-static std::unique_ptr<Job> getJob(MyArgs & myArgs, EvalState & state, Bindings & autoArgs, Value & v) {
+static std::unique_ptr<Job> getJob(EvalState & state, Bindings & autoArgs, Value & v) {
     try {
-        return std::make_unique<Drvs>(myArgs, state, autoArgs, v);
+        return std::make_unique<Drvs>(state, autoArgs, v);
     } catch (TypeError & _) {
         try {
             return std::make_unique<JobAttrs>(state, autoArgs, v);

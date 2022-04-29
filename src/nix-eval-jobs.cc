@@ -35,8 +35,6 @@ using namespace nix_eval_jobs;
    garbage collector by simply freeing the whole heap when required.
  */
 
-static MyArgs myArgs;
-
 static Value *releaseExprTopLevelValue(EvalState &state, Bindings &autoArgs) {
     Value vTop;
 
@@ -89,9 +87,8 @@ Value *topLevelValue(EvalState &state, Bindings &autoArgs) {
                         : releaseExprTopLevelValue(state, autoArgs);
 }
 
-static void worker(MyArgs & myArgs, EvalState &state,
-                   Bindings &autoArgs, AutoCloseFD &to,
-                   AutoCloseFD &from)
+static void worker(EvalState &state, Bindings &autoArgs,
+                   AutoCloseFD &to, AutoCloseFD &from)
 {
     auto vRoot = topLevelValue(state, autoArgs);
 
@@ -112,9 +109,9 @@ static void worker(MyArgs & myArgs, EvalState &state,
 
             auto pathJson = json{ { "path", path.toJson() } };
 
-            auto job = path.walk(myArgs, state, autoArgs, *vRoot);
+            auto job = path.walk(state, autoArgs, *vRoot);
 
-            for (auto & res : job->eval(myArgs, state)) {
+            for (auto & res : job->eval(state)) {
               auto reply = pathJson;
 
               reply.update(res->toJson());
@@ -164,7 +161,7 @@ void collector(Sync<State> & state_, std::condition_variable & wakeup) {
         while (true) {
 
             auto proc = proc_.has_value() ? std::move(proc_.value())
-                                          : std::make_unique<Proc>(myArgs, worker);
+                                          : std::make_unique<Proc>(worker);
 
             /* Check whether the existing worker process is still there. */
             auto s = readLine(proc->from.get());

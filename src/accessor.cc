@@ -115,11 +115,11 @@ static std::string accessorPathToAttrPath(AccessorPath & accessors) {
 
 /* walk : AccessorPath -> EvalState -> Bindings -> Value -> Job */
 
-std::unique_ptr<Job> AccessorPath::walk(MyArgs & myArgs, EvalState & state, Bindings & autoArgs, Value & vRoot) {
+std::unique_ptr<Job> AccessorPath::walk(EvalState & state, Bindings & autoArgs, Value & vRoot) {
     auto [vRes, pos] =
         findAlongAttrPath(state, accessorPathToAttrPath(*this), autoArgs, vRoot);
 
-    return getJob(myArgs, state, autoArgs, *vRes);
+    return getJob(state, autoArgs, *vRes);
 }
 
 /* toJson : ToJson -> json */
