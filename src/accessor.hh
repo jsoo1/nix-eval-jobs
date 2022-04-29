@@ -27,7 +27,7 @@ public:
 struct Index : Accessor {
     unsigned long val;
     Index(const json & json);
-    Index(const Index & that);
+    Index(const Index & that) : val(that.val) { };
     std::unique_ptr<Accessor> clone() override;
     json toJson() override;
     ~Index() { }
@@ -37,7 +37,7 @@ struct Index : Accessor {
 struct Name : Accessor {
     std::string val;
     Name(const json & json);
-    Name(const Name & that);
+    Name(const Name & that) : val(that.val) { };
     std::unique_ptr<Accessor> clone() override;
     json toJson() override;
     ~Name() { }
@@ -45,8 +45,10 @@ struct Name : Accessor {
 
 /* Follow a path into a nested nixexpr */
 struct AccessorPath {
-    std::vector<std::unique_ptr<Accessor>> path;
+    std::shared_ptr<std::vector<std::unique_ptr<Accessor>>> path;
     AccessorPath(std::string & s);
+    AccessorPath(const AccessorPath & that) = default;
+    AccessorPath() = default;
     /* walk : AccessorPath -> EvalState -> Bindings -> Value -> Job */
     std::unique_ptr<Job> walk(EvalState & state, Bindings & autoArgs, Value & vRoot);
     json toJson();

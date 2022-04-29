@@ -36,10 +36,6 @@ Index::Index(const json & json) {
     }
 }
 
-Index::Index(const Index & that) {
-    this->val = that.val;
-}
-
 Name::Name(const json & json) {
     try {
         val = json;
@@ -47,10 +43,6 @@ Name::Name(const json & json) {
     } catch (...) {
         throw TypeError("could not create an attrname out of json: %s", json.dump());
     }
-}
-
-Name::Name(const Name & that) {
-    this->val = that.val;
 }
 
 /* clone : Accessor -> Accessor */
@@ -85,7 +77,7 @@ AccessorPath::AccessorPath(std::string & s) {
     try {
         std::vector<json> vec = intermediate;
         for (auto j : vec)
-            this->path.push_back(accessorFromJson(j));
+            this->path->push_back(accessorFromJson(j));
 
     } catch (json::exception & e) {
         throw TypeError("could not make an accessor path out of json, expected a list of accessors: %s", intermediate.dump());
@@ -97,8 +89,8 @@ AccessorPath::AccessorPath(std::string & s) {
 static std::string accessorPathToAttrPath(AccessorPath & accessors) {
     std::stringstream ss;
 
-    auto begin = accessors.path.begin();
-    auto end = accessors.path.end();
+    auto begin = accessors.path->begin();
+    auto end = accessors.path->end();
 
     if (begin != end) {
         ss << begin->get()->toJson();
@@ -126,7 +118,7 @@ std::unique_ptr<Job> AccessorPath::walk(EvalState & state, Bindings & autoArgs, 
 
 json AccessorPath::toJson() {
     std::vector<json> res;
-    for (auto & a : path)
+    for (auto & a : *path)
         res.push_back(a->toJson());
 
     return res;
