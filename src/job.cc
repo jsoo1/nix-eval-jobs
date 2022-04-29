@@ -19,12 +19,28 @@ namespace nix_eval_jobs {
 
 /* Job */
 
+std::unique_ptr<Job> getJob(EvalState & state, Bindings & autoArgs, Value & v) {
+    try {
+        return std::make_unique<Drvs>(state, autoArgs, v);
+    } catch (TypeError & _) {
+        try {
+            return std::make_unique<JobAttrs>(state, autoArgs, v);
+        } catch (TypeError & _) {
+            try {
+                return std::make_unique<JobList>(state, autoArgs, v);
+            } catch (TypeError & _) {
+                throw TypeError("error creating job, expecting one of a derivation, an attrset or a derivation, got: %s", showType(v));
+            }
+        }
+    }
+}
+
 Drvs::Drvs(EvalState & state, Bindings & autoArgs, Value & v) {
     DrvInfos drvInfos;
     getDerivations(state, v, "", autoArgs, drvInfos, false);
 
     for (auto & drvInfo : drvInfos)
-        this->drvs.push_back(Drv(state, drvInfo));
+        this->drvs.push_back(std::make_shared<Drv>(state, drvInfo));
 
 }
 
@@ -88,17 +104,17 @@ JobList::JobList(EvalState & state, Bindings & autoArgs, Value & vIn) {
 
 /* children : HasChildren -> vector<Accessor> */
 
-std::vector<std::unique_ptr<Accessor>> JobAttrs::children() {
-    std::vector<std::unique_ptr<Accessor>> children;
+JobChildren JobAttrs::children() {
+    std::shared_ptr<std::vector<std::unique_ptr<Accessor>>> children;
 
     for (auto & a : this->v->attrs->lexicographicOrder())
-        children.push_back(std::make_unique<Name>(a->name));
+        children->push_back(std::make_unique<Name>(a->name));
 
-    return children;
+    return JobChildren(children);
 }
 
-std::vector<std::unique_ptr<Accessor>> JobList::children() {
-    std::vector<std::unique_ptr<Accessor>> children;
+JobChildren JobList::children() {
+    std::shared_ptr<std::vector<std::unique_ptr<Accessor>>> children;
     unsigned long i = 0;
 
     #ifdef __GNUC__
@@ -107,14 +123,14 @@ std::vector<std::unique_ptr<Accessor>> JobList::children() {
     #pragma clang diagnostic ignored "-Wunused-variable"
     #endif
     for (auto & _ : v->listItems())
-        children.push_back(std::make_unique<Index>(i++));
+        children->push_back(std::make_unique<Index>(i++));
     #ifdef __GNUC__
     #pragma GCC diagnostic warning "-Wunused-variable"
     #elif __clang__
     #pragma clang diagnostic warning "-Wunused-variable"
     #endif
 
-    return children;
+    return JobChildren(children);
 }
 
 /* eval : Job -> EvalState -> JobEvalResult */
@@ -127,8 +143,8 @@ JobEvalResults Drvs::eval(EvalState & state) {
         auto localStore = state.store.dynamic_pointer_cast<LocalFSStore>();
 
         for (auto & drv : this->drvs) {
-            auto storePath = localStore->parseStorePath(drv.drvPath);
-            Path root = myArgs.gcRootsDir + "/" + std::string(baseNameOf(drv.drvPath));
+            auto storePath = localStore->parseStorePath(drv->drvPath);
+            Path root = myArgs.gcRootsDir + "/" + std::string(baseNameOf(drv->drvPath));
             if (!pathExists(root)) {
                 localStore->addPermRoot(storePath, root);
             }
@@ -137,42 +153,9 @@ JobEvalResults Drvs::eval(EvalState & state) {
 
     JobEvalResults res;
     for (auto & d : this->drvs)
-        res.push_back(d.clone());
+        res.push_back(d);
 
     return res;
-}
-
-JobEvalResults JobAttrs::eval(EvalState & state) {
-    JobEvalResults res;
-    res.push_back(JobChildren(*this).clone());
-    return res;
-}
-
-JobEvalResults JobList::eval(EvalState & state) {
-    JobEvalResults res;
-    res.push_back(JobChildren(*this).clone());
-    return res;
-}
-
-/* JobEvalResult */
-
-JobChildren::JobChildren(HasChildren & parent) {
-    this->children = parent.children();
-}
-
-JobChildren::JobChildren(const JobChildren & that) {
-    for (auto & p : that.children)
-        this->children.push_back(p->clone());
-}
-
-/* clone : JobChildren -> JobChildren */
-
-std::unique_ptr<JobEvalResult> Drv::clone() {
-    return std::make_unique<Drv>(*this);
-}
-
-std::unique_ptr<JobEvalResult> JobChildren::clone() {
-    return std::make_unique<JobChildren>(*this);
 }
 
 /* toJson : JobEvalResult -> json */
@@ -180,7 +163,7 @@ std::unique_ptr<JobEvalResult> JobChildren::clone() {
 json JobChildren::toJson() {
     std::vector<json> children;
 
-    for (auto & child : this->children)
+    for (auto & child : *this->children)
         children.push_back(child->toJson());
 
     return json{ {"children", children } };
