@@ -1,9 +1,12 @@
+#pragma once
+
 #include <nix/eval.hh>
 #include <nix/get-drvs.hh>
 #include <nix/local-fs-store.hh>
 #include <nix/value-to-json.hh>
 
 #include <nlohmann/json.hpp>
+#include "handler.hh"
 #include "accessor.hh"
 
 using json = nlohmann::json;
@@ -24,6 +27,7 @@ class JobEvalResult {
 public:
     /* toJson : JobEvalResult -> json */
     virtual json toJson() = 0;
+    virtual void handle(const HandleEvalResult & handlers) = 0;
     virtual ~JobEvalResult() { };
 };
 
@@ -66,9 +70,13 @@ struct Drv : JobEvalResult {
     std::optional<json> meta;
     Drv(EvalState & state, DrvInfo & drvInfo);
     Drv(const Drv & that) = default;
+    Drv(const json & j);
     json toJson() override;
+    void handle(const HandleEvalResult & handlers) override { handlers.drv(*this); };
     ~Drv() { };
 };
+
+void to_json(json & j, const Drv & drv);
 
 /* The leaf on the tree of derivations (there may be multiple due to
    `recurseForDerivations`)
@@ -76,7 +84,7 @@ struct Drv : JobEvalResult {
 struct Drvs : Job {
     std::vector<std::shared_ptr<Drv>> drvs;
     Drvs(EvalState & state, Bindings & autoArgs, Value & v);
-    Drvs(const Drvs & that);
+    Drvs(const Drvs & that) = default;
     JobEvalResults eval(EvalState & state) override;
     ~Drvs() { };
 };
@@ -87,10 +95,13 @@ struct Drvs : Job {
  */
 struct JobChildren : JobEvalResult {
     std::shared_ptr<std::vector<std::unique_ptr<Accessor>>> children;
+    JobChildren() = default;
     JobChildren(std::shared_ptr<std::vector<std::unique_ptr<Accessor>>> & those)
         : children(those) { };
     JobChildren(const JobChildren & that) = default;
+    JobChildren(const json & j);
     json toJson() override;
+    void handle(const HandleEvalResult & handlers) override { handlers.children(*this); };
     ~JobChildren() { };
 };
 
@@ -115,7 +126,7 @@ struct JobAttrs : Job, HasChildren {
 };
 
 /* A list of Job */
-    struct JobList : Job, HasChildren {
+struct JobList : Job, HasChildren {
     Value * v;
     JobList(EvalState & state, Bindings & autoArgs, Value & vIn);
     JobChildren children() override;

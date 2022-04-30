@@ -44,9 +44,23 @@ Drvs::Drvs(EvalState & state, Bindings & autoArgs, Value & v) {
 
 }
 
-Drvs::Drvs(const Drvs & that) {
-    this->drvs = that.drvs;
+JobAttrs::JobAttrs(EvalState & state, Bindings & autoArgs, Value & vIn) {
+    v = state.allocValue();
+    state.autoCallFunction(autoArgs, vIn, *v);
+
+    if (v->type() != nAttrs)
+        throw TypeError("wanted a JobAttrs, got %s", showType(vIn));
 }
+
+JobList::JobList(EvalState & state, Bindings & autoArgs, Value & vIn) {
+    v = state.allocValue();
+    state.autoCallFunction(autoArgs, vIn, *v);
+
+    if (v->type() != nList)
+        throw TypeError("wanted a JobList, got %s", showType(vIn));
+}
+
+/* JobEvalResult := Drv | JobChildren  */
 
 Drv::Drv(EvalState & state, DrvInfo & drvInfo) {
     if (drvInfo.querySystem() == "unknown")
@@ -86,20 +100,28 @@ Drv::Drv(EvalState & state, DrvInfo & drvInfo) {
 
 }
 
-JobAttrs::JobAttrs(EvalState & state, Bindings & autoArgs, Value & vIn) {
-    v = state.allocValue();
-    state.autoCallFunction(autoArgs, vIn, *v);
+Drv::Drv(const json & j) {
+    this->name = j["name"] ;
+    this->system = j["system"];
+    this->drvPath = j["drvPath"];
 
-    if (v->type() != nAttrs)
-        throw TypeError("wanted a JobAttrs, got %s", showType(vIn));
+    std::map<std::string, std::string> outs = j["outputs"];
+    for (auto & output : outs)
+        this->outputs.insert(output);
+
+    if (j.contains("meta"))
+        this->meta = j["meta"];
 }
 
-JobList::JobList(EvalState & state, Bindings & autoArgs, Value & vIn) {
-    v = state.allocValue();
-    state.autoCallFunction(autoArgs, vIn, *v);
+JobChildren::JobChildren(const json & j) {
+    try {
+        std::vector<json> vec = j;
+        for (auto i : vec)
+            this->children->push_back(accessorFromJson(i));
 
-    if (v->type() != nList)
-        throw TypeError("wanted a JobList, got %s", showType(vIn));
+    } catch (json::exception & e) {
+        throw TypeError("could not make job children out of json, expected a list of accessors: %s", j.dump());
+    }
 }
 
 /* children : HasChildren -> vector<Accessor> */
@@ -166,21 +188,22 @@ json JobChildren::toJson() {
     for (auto & child : *this->children)
         children.push_back(child->toJson());
 
-    return json{ {"children", children } };
+    return children;
+}
 
+void to_json(json & j, const Drv & drv) {
+    j["name"]  = drv.name;
+    j["system"] = drv.system;
+    j["drvPath"] = drv.drvPath;
+    j["outputs"] = drv.outputs;
+
+    if (drv.meta.has_value())
+        j["meta"] = drv.meta.value();
 }
 
 json Drv::toJson() {
     json j;
-
-    j["name"]  = this->name;
-    j["system"] = this->system;
-    j["drvPath"] = this->drvPath;
-    j["outputs"] = this->outputs;
-
-    if (this->meta.has_value())
-        j["meta"] = this->meta.value();
-
+    to_json(j, *this);
     return j;
 }
 
