@@ -60,6 +60,8 @@ static Value *flakeTopLevelValue(EvalState &state, Bindings &autoArgs) {
                                      .updateLockFile = false,
                                      .useRegistries = false,
                                      .allowMutable = false,
+                                     .inputOverrides = {},
+                                     .inputUpdates = {},
                                  });
 
     callFlake(state, lockedFlake, *vFlake);

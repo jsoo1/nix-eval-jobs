@@ -2,6 +2,7 @@ src = [
   'proc.cc',
   'accessor.cc',
   'job.cc',
+  'msg.cc',
   'nix-eval-jobs.cc',
 ]
 
@@ -16,4 +17,9 @@ executable('nix-eval-jobs', src,
              threads_dep
            ],
            install: true,
-           cpp_args: ['-std=c++17', '-fvisibility=hidden'])
+           cpp_args: [
+             '-std=c++17',
+             '-fvisibility=hidden',
+             '-Werror',
+             '-Wmissing-field-initializers'
+           ])
