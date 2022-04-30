@@ -9,19 +9,19 @@
 
 using namespace nix;
 
-using json = nlohmann::json;
+using namespace nlohmann;
 
 namespace nix_eval_jobs {
 
 /* Parse an accessor from json, the introduction rule. */
-static std::unique_ptr<Accessor> accessorFromJson(const json & json) {
+std::unique_ptr<Accessor> accessorFromJson(const json & json) {
     try {
         return std::make_unique<Index>(json);
-    } catch (...) {
+    } catch (TypeError & e1) {
         try {
             return std::make_unique<Name>(json);
-        } catch (...) {
-            throw TypeError("could not make an accessor out of json: %s", json.dump());
+        } catch (TypeError & e2) {
+            throw TypeError("could not make an accessor out of json: %s, %s", e1.msg(), e2.msg());
         }
     }
 }
@@ -45,14 +45,6 @@ Name::Name(const json & json) {
     }
 }
 
-/* clone : Accessor -> Accessor */
-std::unique_ptr<Accessor> Index::clone() {
-    return std::make_unique<Index>(*this);
-}
-
-std::unique_ptr<Accessor> Name::clone() {
-    return std::make_unique<Name>(*this);
-}
 /* toJson : Accessor -> json */
 
 json Name::toJson() {
@@ -81,6 +73,16 @@ AccessorPath::AccessorPath(std::string & s) {
 
     } catch (json::exception & e) {
         throw TypeError("could not make an accessor path out of json, expected a list of accessors: %s", intermediate.dump());
+    }
+}
+
+AccessorPath::AccessorPath(const json & j) {
+    try {
+        std::vector<json> vec = j;
+        for (auto i : vec)
+            this->path->push_back(accessorFromJson(i));
+    } catch (json::exception & e) {
+        throw TypeError("could not make an accessor path out of json, expected a list of accessors: %s", j.dump());
     }
 }
 
@@ -114,14 +116,20 @@ std::unique_ptr<Job> AccessorPath::walk(EvalState & state, Bindings & autoArgs, 
     return getJob(state, autoArgs, *vRes);
 }
 
-/* toJson : ToJson -> json */
+/* toJson : AccessorPath -> json */
 
-json AccessorPath::toJson() {
+void to_json(json & j, const AccessorPath & accessors) {
     std::vector<json> res;
-    for (auto & a : *path)
+    for (auto & a : *accessors.path)
         res.push_back(a->toJson());
 
-    return res;
+    j = res;
+}
+
+json AccessorPath::toJson() {
+    json j;
+    to_json(j, *this);
+    return j;
 }
 
 }
