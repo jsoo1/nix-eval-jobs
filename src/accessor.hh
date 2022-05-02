@@ -52,6 +52,7 @@ struct AccessorPath {
     AccessorPath(const AccessorPath & that) = default;
     /* walk : AccessorPath -> EvalState -> Bindings -> Value -> Job */
     std::unique_ptr<Job> walk(EvalState & state, Bindings & autoArgs, Value & vRoot);
+    std::string toAttrPath();
     json toJson();
     ~AccessorPath() { }
 };
