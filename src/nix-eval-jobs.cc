@@ -15,7 +15,10 @@
 
 #include "args.hh"
 #include "proc.hh"
+#include "msg.hh"
+#include "handler.hh"
 #include "job.hh"
+#include "util.hh"
 
 using namespace nix;
 using namespace nlohmann;
@@ -98,7 +101,12 @@ static void worker(EvalState &state, Bindings &autoArgs,
         /* Wait for the collector to send us a job name. */
         writeLine(to.get(), "next");
 
-        auto s = readLine(from.get());
+        std::string s;
+        try {
+            s = readLine(from.get());
+        } catch (std::exception & e) {
+            throw EvalError("collector died unexpectedly: %s", e.what());
+        }
         if (s == "exit") break;
         if (!hasPrefix(s, "do ")) abort();
         auto pathStr = std::string(s, 3);
@@ -119,6 +127,8 @@ static void worker(EvalState &state, Bindings &autoArgs,
               reply.update(res->toJson());
 
               writeLine(to.get(), reply.dump());
+
+              writeLine(to.get(), "done");
             }
 
         } catch (EvalError &e) {
@@ -151,94 +161,233 @@ static void worker(EvalState &state, Bindings &autoArgs,
 
 struct State
 {
-    std::set<json> todo{json::array()};
+    std::set<json> todo;
     std::set<json> active;
     std::exception_ptr exc;
 };
+
+/* Can't goto out of a lambda or scope, so enumerate transitions when handling msgs  */
+typedef enum { waitForJob, waitForWorker, errUnsetW } waitForWorkerLabel;
+typedef enum { finished, awaitResponsesJ, waitForJobJ, errUnsetJ } waitForJobLabel;
+typedef enum { awaitResponses, saveProc, errUnsetR } awaitResponsesLabel;
 
 void collector(Sync<State> & state_, std::condition_variable & wakeup) {
     try {
         std::optional<std::unique_ptr<Proc>> proc_;
 
-        while (true) {
+        waitForWorkerLabel waitForWorkerJump = errUnsetW;
+        waitForJobLabel waitForJobJump = errUnsetJ;
+        awaitResponsesLabel awaitResponsesJump = errUnsetR;
 
-            auto proc = proc_.has_value() ? std::move(proc_.value())
-                                          : std::make_unique<Proc>(worker);
+        std::optional<json> current;
 
-            /* Check whether the existing worker process is still there. */
-            auto s = readLine(proc->from.get());
-            if (s == "restart") {
+
+    wait_for_worker:
+        waitForWorkerJump = errUnsetW;
+
+        auto proc = proc_.has_value() ? std::move(proc_.value())
+                                      : std::make_unique<Proc>(worker);
+
+        /* Check whether the existing worker process is still there. */
+        std::string s;
+        try {
+            s = readLine(proc->from.get());
+        } catch (std::exception & e) {
+            throw EvalError("worker process died unexpectedly: %s", e.what());
+        }
+
+        auto controlMsg = parseWorkMsg(s);
+
+        controlMsg->handle(HandleWork {
+            .restart = [&](const WorkRestart & msg) {
                 proc_ = std::nullopt;
-                continue;
-            } else if (s != "next") {
-                auto json = json::parse(s);
-                if (json.find("error") != json.end())
-                    throw Error("worker error: %s", (std::string) json["error"]);
+                waitForWorkerJump = waitForWorker;
+            },
+            .next = [&](const WorkNext & msg) {
+                waitForWorkerJump = waitForJob;
+            },
+            .error = [&](const WorkError & msg) {
+                throw Error("worker error: %s", msg.detail);
             }
+        });
 
-            /* Wait for a job name to become available. */
-            json accessor;
+        switch (waitForWorkerJump) {
+        case waitForJob: goto wait_for_job;
+        case waitForWorker: goto wait_for_worker;
+        case errUnsetW:
+            throw Error("something awful happened managing jumps waiting for worker");
+        }
 
-            while (true) {
-                checkInterrupt();
-                auto state(state_.lock());
-                if ((state->todo.empty() && state->active.empty()) || state->exc) {
-                    writeLine(proc->to.get(), "exit");
-                    return;
-                }
-                if (!state->todo.empty()) {
-                    accessor = *state->todo.begin();
-                    state->todo.erase(state->todo.begin());
-                    state->active.insert(accessor);
-                    break;
-                } else
-                    state.wait(wakeup);
+    wait_for_job: /* Wait for a job name to become available. */
+        waitForJobJump = errUnsetJ;
+        {
+            checkInterrupt();
+            auto state(state_.lock());
+            if ((state->todo.empty() && state->active.empty()) || state->exc) {
+                CollectExit().send(proc->to);
+
+                waitForJobJump = finished;
             }
+            if (!state->todo.empty()) {
+                auto begin = state->todo.begin();
+                current = *begin;
+                state->todo.erase(begin);
+                state->active.insert(*current);
 
-            /* Tell the worker to evaluate it. */
-            writeLine(proc->to.get(), "do " + accessor.dump());
+                CollectDo(AccessorPath(*begin)).send(proc->to);
 
-            /* Wait for the response. */
-            auto respString = readLine(proc->from.get());
-            auto response = json::parse(respString);
-
-            if (response.find("children") != response.end()) {
-                if (response.find("path") != response.end()) {
-                    try {
-                        std::vector<json> children = response["children"];
-                        std::vector<json> path = response["path"];
-
-                        auto state(state_.lock());
-                        for (auto & child : children) {
-                            path.push_back(child);
-                            state->todo.insert(path);
-                            path.pop_back();
-                        }
-                    } catch (json::exception & e) {
-                        throw EvalError("expected an array of children and a path from worker, got %s", response.dump());
-                    }
-
-                } else {
-                    throw EvalError("worker returned children with no path, got: %s", response.dump());
-                }
+                waitForJobJump = awaitResponsesJ;
             } else {
-                auto state(state_.lock());
-                std::cout << response << "\n" << std::flush;
-            }
+                state.wait(wakeup);
 
-            proc_ = std::move(proc);
-
-            /* Print the response. */
-            {
-                auto state(state_.lock());
-                state->active.erase(accessor);
-                wakeup.notify_all();
+                waitForJobJump = waitForJobJ;
             }
         }
+
+        switch (waitForJobJump) {
+        case finished: return;
+        case waitForJobJ: goto wait_for_job;
+        case awaitResponsesJ: goto await_responses;
+        case errUnsetJ:
+            throw Error("something awful happened managing jumps waiting for job");
+        }
+
+
+    await_responses:
+        awaitResponsesJump = errUnsetR;
+
+        std::string respString;
+        try {
+            respString = readLine(proc->from.get());
+        } catch (std::exception & e) {
+            throw EvalError("worker process died unexpectedly while processing results: %s", e.what());
+        }
+
+
+        auto jobMsg = parseWorkJob(respString);
+
+        jobMsg->handle(HandleJob {
+            .drv = [&](const WorkDrv & msg) {
+                auto state(state_.lock());
+                json d;
+                nix_eval_jobs::to_json(d, msg.drv);
+                std::cout << d << std::endl << std::flush;
+
+                json p;
+                nix_eval_jobs::to_json(p, msg.path);
+                state->active.erase(p);
+                wakeup.notify_all();
+
+                awaitResponsesJump = awaitResponses;
+            },
+            .children = [&](const WorkChildren & msg) {
+                json j;
+                nix_eval_jobs::to_json(j, msg.path);
+                std::vector<json> path = j;
+                auto state(state_.lock());
+                for (auto & child : *msg.children.children) {
+                    path.push_back(child->toJson());
+                    state->todo.insert(path);
+                    path.pop_back();
+                }
+
+                awaitResponsesJump = saveProc;
+            },
+            .done = [&](const WorkDone & msg) {
+                awaitResponsesJump = saveProc;
+            },
+            .error = [&](const WorkError & msg) {
+                throw Error("worker error: %s", msg.detail);
+            },
+        });
+
+        switch (awaitResponsesJump) {
+        case awaitResponses: goto await_responses;
+        case saveProc: goto save_proc;
+        case errUnsetR:
+            throw Error("something awful happened managing jumps awaiting responses");
+        }
+
+    save_proc:
+        proc_ = std::move(proc);
+        goto wait_for_worker;
+
     } catch (...) {
         auto state(state_.lock());
         state->exc = std::current_exception();
         wakeup.notify_all();
+    }
+}
+
+static void collectTopLevelJob(
+    EvalState & state,
+    Bindings & autoArgs,
+    AutoCloseFD & to,
+    AutoCloseFD & from)
+{
+    try {
+        auto vRoot = topLevelValue(state, autoArgs);
+
+        auto job = getJob(state, autoArgs, *vRoot);
+
+        for (auto & res : job->eval(state)) res->handle(HandleEvalResult {
+            .drv = [&](const Drv & drv) {
+                WorkDrv(drv, AccessorPath()).send(to);
+            },
+            .children = [&](const JobChildren & children) {
+                WorkChildren(AccessorPath(), children).send(to);
+            },
+        });
+
+    } catch (Error & e) {
+        WorkError(e.msg()).send(to);
+    }
+
+    WorkDone().send(to);
+}
+
+void initState(Sync<State> & state_) {
+    /* Collect initial attributes to evaluate. This must be done in a
+       separate fork to avoid spawning a download in the parent
+       process. If that happens, worker processes will try to enqueue
+       downloads on their own download threads (which will not
+       exist). Then the worker processes will hang forever waiting for
+       downloads.
+    */
+    auto proc = Proc(collectTopLevelJob);
+    bool keepGoing = true;
+
+    while (keepGoing) {
+        std::string s;
+        try {
+            s = readLine(proc.from.get());
+        } catch (std::exception & e) {
+            throw EvalError("top level collector process died unexpectedly: %s", e.what());
+        }
+
+
+        auto msg = parseWorkJob(s);
+
+        auto handler = HandleJob {
+            .drv = [&](const WorkDrv & msg) {
+                json j;
+                nix_eval_jobs::to_json(j, msg.drv);
+                std::cout << j << std::endl << std::flush;
+            },
+            .children = [&](const WorkChildren & msg) {
+                auto state(state_.lock());
+                for (auto & a : *msg.children.children)
+                    state->todo.insert(std::vector({a->toJson()}));
+            },
+            .done = [&](const WorkDone & msg) {
+                keepGoing = false;
+            },
+            .error = [&](const WorkError & msg) {
+                throw Error("getting initial attributes: %s", msg.detail);
+            }
+        };
+
+        msg->handle(handler);
     }
 }
 
@@ -282,6 +431,7 @@ int main(int argc, char * * argv)
         }
 
         Sync<State> state_;
+        initState(state_);
 
         /* Start a collector thread per worker process. */
         std::vector<std::thread> threads;
