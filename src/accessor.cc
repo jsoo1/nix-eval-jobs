@@ -88,11 +88,11 @@ AccessorPath::AccessorPath(const json & j) {
 
 /* Make an AttrPath out of AccessorPath findAlongAttrPath */
 
-static std::string accessorPathToAttrPath(AccessorPath & accessors) {
+std::string AccessorPath::toAttrPath() {
     std::stringstream ss;
 
-    auto begin = accessors.path->begin();
-    auto end = accessors.path->end();
+    auto begin = this->path->begin();
+    auto end = this->path->end();
 
     if (begin != end) {
         ss << begin->get()->toJson();
@@ -111,7 +111,7 @@ static std::string accessorPathToAttrPath(AccessorPath & accessors) {
 
 std::unique_ptr<Job> AccessorPath::walk(EvalState & state, Bindings & autoArgs, Value & vRoot) {
     auto [vRes, pos] =
-        findAlongAttrPath(state, accessorPathToAttrPath(*this), autoArgs, vRoot);
+        findAlongAttrPath(state, this->toAttrPath(), autoArgs, vRoot);
 
     return getJob(state, autoArgs, *vRes);
 }
