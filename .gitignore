@@ -58,3 +58,4 @@ dmypy.json
 
 # gdb
 .gdb_history
+.gdbinit
