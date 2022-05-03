@@ -39,8 +39,4 @@ in
   ];
 
   NODE_PATH = "${pkgs.nodePackages.prettier-plugin-toml}/lib/node_modules";
-
-  shellHook = lib.optionalString stdenv.isLinux ''
-    export NIX_DEBUG_INFO_DIRS="${pkgs.curl.debug}/lib/debug:${nix.debug}/lib/debug''${NIX_DEBUG_INFO_DIRS:+:$NIX_DEBUG_INFO_DIRS}"
-  '';
 })
