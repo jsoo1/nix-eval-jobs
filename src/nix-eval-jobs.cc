@@ -326,6 +326,8 @@ static void collectTopLevelJob(
     AutoCloseFD & from)
 {
     try {
+	using namespace std::chrono_literals;
+        std::this_thread::sleep_for(20s);
         auto vRoot = topLevelValue(state, autoArgs);
 
         auto job = getJob(state, autoArgs, *vRoot);

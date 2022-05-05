@@ -1,6 +1,6 @@
 # Debugging nix-eval-jobs with gdb and nix
 
-We use ~nix-eval-jobs~ in CI, it's great!
+We use `nix-eval-jobs` in CI, it's great!
 
 # Recently solved some issues with our nix-eval-jobs fork for work
 
@@ -17,7 +17,12 @@ We use ~nix-eval-jobs~ in CI, it's great!
 
 # Trying to upstream our changes (alterations to our patches needed)
 
-## Preparation
+## Preparation items of note
 
-- setup a vm with nixos stable iso for demo (also used for actual bug-hunt!)
-- cloned our fork of nix-eval-jobs, added upstream remote
+Pretty sick devprodding if, I say so, myself
+
+- Setup a vm with nixos stable iso for demo (also used for actual bug-hunt!)
+- Cloned our fork of nix-eval-jobs, added upstream remote
+- Setup a pretty sweet direnv configuration to keep our dependency source files up to date
+  + see .envrc
+- Added a test file with some test nix expressions to use while debugging.

@@ -46,7 +46,8 @@ struct Name : Accessor {
 /* Follow a path into a nested nixexpr */
 struct AccessorPath {
     std::shared_ptr<std::vector<std::unique_ptr<Accessor>>> path;
-    AccessorPath() = default;
+    AccessorPath() :
+        path(std::make_shared<std::vector<std::unique_ptr<Accessor>>>(std::vector<std::unique_ptr<Accessor>>{})) { };
     AccessorPath(std::string & s);
     AccessorPath(const json & j);
     AccessorPath(const AccessorPath & that) = default;
