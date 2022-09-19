@@ -237,9 +237,13 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
                 //  Hacky workaround for nixos systems whose "system" attribute is a drv
                 auto systemAttr = v->attrs->find(state.symbols.create("system"));
 
+                if (systemAttr != v->attrs->end())
+                    state.forceValue(*systemAttr->value);
+
+
                 auto drvInfo = systemAttr != v->attrs->end() && systemAttr->value->type == tAttrs
-                  ? getDerivation(state, *systemAttr->value, false)
-                  : getDerivation(state, *v, false);
+                    ? getDerivation(state, *systemAttr->value, false)
+                    : getDerivation(state, *v, false);
 
                 if (drvInfo) {
                     auto drv = Drv(state, *drvInfo);
