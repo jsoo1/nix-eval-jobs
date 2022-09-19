@@ -38,12 +38,9 @@ using namespace nlohmann;
 struct MyArgs : MixEvalArgs, MixCommonArgs {
     std::string releaseExpr;
     Path gcRootsDir;
-    bool flake = false;
     bool fromArgs = false;
     bool meta = false;
-    bool showTrace = false;
     bool impure = false;
-    bool checkCacheStatus = false;
     size_t nrWorkers = 1;
     size_t maxMemorySize = 4096;
 
@@ -101,24 +98,6 @@ struct MyArgs : MixEvalArgs, MixCommonArgs {
             }});
 
         mkFlag()
-            .longName("check-cache-status")
-            .description(
-                 "Check if the derivations are present locally or in "
-                 "any configured substituters (i.e. binary cache). The "
-                 "information "
-                 "will be exposed in the `isCached` field of the JSON output.")
-            .handler({[=](){
-              checkCacheStatus = true;
-            }});
-
-        mkFlag()
-            .longName("show-trace")
-            .description("print out a stack trace in case of evaluation errors")
-            .handler({[=]() {
-                showTrace = true;
-            }});
-
-        mkFlag()
           .longName("expr")
           .shortName('E')
           .description("treat the argument as a Nix expression")
@@ -155,58 +134,8 @@ static Value *releaseExprTopLevelValue(EvalState &state, Bindings &autoArgs) {
     return vRoot;
 }
 
-static Value *flakeTopLevelValue(EvalState &state, Bindings &autoArgs) {
-    using namespace flake;
-
-    auto [flakeRef, fragment] =
-        parseFlakeRefWithFragment(myArgs.releaseExpr, absPath("."));
-
-    auto vFlake = state.allocValue();
-
-    auto lockedFlake = lockFlake(state, flakeRef,
-                                 LockFlags{
-                                     .updateLockFile = false,
-                                     .useRegistries = false,
-                                     .allowMutable = false,
-                                 });
-
-    callFlake(state, lockedFlake, *vFlake);
-
-    auto vOutputs = vFlake->attrs->get(state.symbols.create("outputs"))->value;
-    state.forceValue(*vOutputs, noPos);
-    auto vTop = *vOutputs;
-
-    if (fragment.length() > 0) {
-        Bindings &bindings(*state.allocBindings(0));
-        auto [nTop, pos] = findAlongAttrPath(state, fragment, bindings, vTop);
-        if (!nTop)
-            throw Error("error: attribute '%s' missing", nTop);
-        vTop = *nTop;
-    }
-
-    auto vRoot = state.allocValue();
-    state.autoCallFunction(autoArgs, vTop, *vRoot);
-
-    return vRoot;
-}
-
 Value *topLevelValue(EvalState &state, Bindings &autoArgs) {
-    return myArgs.flake ? flakeTopLevelValue(state, autoArgs)
-                        : releaseExprTopLevelValue(state, autoArgs);
-}
-
-bool queryIsCached(Store &store, std::map<std::string, std::string> &outputs) {
-    uint64_t downloadSize, narSize;
-    StorePathSet willBuild, willSubstitute, unknown;
-
-    std::vector<StorePathWithOutputs> paths;
-    for (auto const &[key, val] : outputs) {
-        paths.push_back(followLinksToStorePathWithOutputs(store, val));
-    }
-
-    store.queryMissing(toDerivedPaths(paths), willBuild, willSubstitute,
-                       unknown, downloadSize, narSize);
-    return willBuild.empty() && unknown.empty();
+    return releaseExprTopLevelValue(state, autoArgs);
 }
 
 /* The fields of a derivation that are printed in json form */
@@ -214,7 +143,6 @@ struct Drv {
     std::string name;
     std::string system;
     std::string drvPath;
-    bool isCached;
     std::map<std::string, std::string> outputs;
     std::optional<nlohmann::json> meta;
 
@@ -225,8 +153,7 @@ struct Drv {
         auto localStore = state.store.dynamic_pointer_cast<LocalFSStore>();
 
         for (auto out : drvInfo.queryOutputs(true)) {
-            if (out.second)
-                outputs[out.first] = localStore->printStorePath(*out.second);
+            outputs[out.first] = out.second;
         }
 
         if (myArgs.meta) {
@@ -242,19 +169,16 @@ struct Drv {
                     continue;
                 }
 
-                printValueAsJSON(state, true, *metaValue, noPos, ss, context);
+                printValueAsJSON(state, true, *metaValue, ss, context);
 
                 meta_[name] = nlohmann::json::parse(ss.str());
             }
             meta = meta_;
         }
-        if (myArgs.checkCacheStatus) {
-            isCached = queryIsCached(*localStore, outputs);
-        }
 
         name = drvInfo.queryName();
         system = drvInfo.querySystem();
-        drvPath = localStore->printStorePath(drvInfo.requireDrvPath());
+        drvPath = drvInfo.queryDrvPath();
     }
 };
 
@@ -266,10 +190,6 @@ static void to_json(nlohmann::json &json, const Drv &drv) {
 
     if (drv.meta.has_value()) {
         json["meta"] = drv.meta.value();
-    }
-
-    if (myArgs.checkCacheStatus) {
-        json["isCached"] = drv.isCached;
     }
 }
 
@@ -288,6 +208,8 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
                    AutoCloseFD &from) {
     auto vRoot = topLevelValue(state, autoArgs);
 
+    auto sRecurseForDerivations = state.symbols.create("recurseForDerivations");
+
     while (true) {
         /* Wait for the collector to send us a job name. */
         writeLine(to.get(), "next");
@@ -305,13 +227,21 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
         /* Evaluate it and send info back to the collector. */
         json reply = json{{"attr", attrPathS}, {"attrPath", path}};
         try {
-            auto vTmp =
-                findAlongAttrPath(state, attrPathS, autoArgs, *vRoot).first;
+            auto vTmp = findAlongAttrPath(state, attrPathS, autoArgs, *vRoot);
 
             auto v = state.allocValue();
 
-            if (v->type() == nAttrs) {
-                if (auto drvInfo = getDerivation(state, *v, false)) {
+            state.autoCallFunction(autoArgs, *vTmp, *v);
+
+            if (v->type == tAttrs) {
+                //  Hacky workaround for nixos systems whose "system" attribute is a drv
+                auto systemAttr = v->attrs->find(state.symbols.create("system"));
+
+                auto drvInfo = systemAttr != v->attrs->end() && systemAttr->value->type == tAttrs
+                  ? getDerivation(state, *systemAttr->value, false)
+                  : getDerivation(state, *v, false);
+
+                if (drvInfo) {
                     auto drv = Drv(state, *drvInfo);
                     reply.update(drv);
 
@@ -325,9 +255,8 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
                             auto localStore =
                                 state.store
                                     .dynamic_pointer_cast<LocalFSStore>();
-                            auto storePath =
-                                localStore->parseStorePath(drv.drvPath);
-                            localStore->addPermRoot(storePath, root);
+                            auto storePath = drv.drvPath;
+                            localStore->addPermRoot(storePath, root, true);
                         }
                     }
                 } else {
@@ -336,16 +265,15 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
                         path.size() == 0; // Dont require `recurseForDerivations
                                           // = true;` for top-level attrset
 
-                    for (auto &i :
-                         v->attrs->lexicographicOrder(state.symbols)) {
-                        const std::string &name = state.symbols[i->name];
+                    for (auto &i : v->attrs->lexicographicOrder()) {
+                        const std::string &name = i->name;
                         attrs.push_back(name);
 
                         if (name == "recurseForDerivations") {
                             auto attrv =
-                                v->attrs->get(state.sRecurseForDerivations);
+                                v->attrs->find(sRecurseForDerivations);
                             recurse =
-                                state.forceBool(*attrv->value, attrv->pos);
+                                state.forceBool(*attrv->value, *attrv->pos);
                         }
                     }
                     if (recurse)
@@ -358,20 +286,15 @@ static void worker(EvalState &state, Bindings &autoArgs, AutoCloseFD &to,
                 reply["attrs"] = nlohmann::json::array();
             }
         } catch (EvalError &e) {
-            auto err = e.info();
-            std::ostringstream oss;
-            showErrorInfo(oss, err, loggerSettings.showTrace.get());
-            auto msg = oss.str();
-
             // Transmits the error we got from the previous evaluation
             // in the JSON output.
             reply["error"] = filterANSIEscapes(e.msg(), true);
             // Don't forget to print it into the STDERR log, this is
             // what's shown in the Hydra UI.
             printError(e.msg());
-
-            writeLine(to.get(), reply.dump());
         }
+
+        writeLine(to.get(), reply.dump());
 
         /* If our RSS exceeds the maximum, exit. The collector will
            start a new process. */
@@ -541,8 +464,6 @@ int main(int argc, char **argv) {
            'getEnv', 'currentSystem' etc. */
         if (myArgs.impure) {
             evalSettings.pureEval = false;
-        } else if (myArgs.flake) {
-            evalSettings.pureEval = true;
         }
 
         if (myArgs.releaseExpr == "")
@@ -550,10 +471,6 @@ int main(int argc, char **argv) {
 
         if (myArgs.gcRootsDir == "")
             printMsg(lvlError, "warning: `--gc-roots-dir' not specified");
-
-        if (myArgs.showTrace) {
-            settings.showTrace.assign(true);
-        }
 
         Sync<State> state_;
 
