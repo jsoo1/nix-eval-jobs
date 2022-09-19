@@ -13,26 +13,32 @@
 , srcDir ? null
 }:
 
+let
+  inherit (pkgs) lib nix stdenv;
+in
 (pkgs.callPackage ./default.nix {
-  inherit srcDir;
-  nix = pkgs.nix;
+  inherit srcDir nix;
 }).overrideAttrs (old: {
 
   src = null;
 
   nativeBuildInputs = old.nativeBuildInputs ++ [
 
-    pkgs.editorconfig-checker
-
+    pkgs.treefmt
+    pkgs.llvmPackages.clang # clang-format
     pkgs.nixpkgs-fmt
+    pkgs.nodePackages.prettier
 
     (pkgs.python3.withPackages (ps: [
       ps.pytest
+      ps.black
     ]))
 
   ];
 
-  shellHook = ''
-    export NIX_DEBUG_INFO_DIRS="${pkgs.curl.debug}/lib/debug:${pkgs.nix.debug}/lib/debug''${NIX_DEBUG_INFO_DIRS:+:$NIX_DEBUG_INFO_DIRS}"
+  NODE_PATH = "${pkgs.nodePackages.prettier-plugin-toml}/lib/node_modules";
+
+  shellHook = lib.optionalString stdenv.isLinux ''
+    export NIX_DEBUG_INFO_DIRS="${pkgs.curl.debug}/lib/debug:${nix.debug}/lib/debug''${NIX_DEBUG_INFO_DIRS:+:$NIX_DEBUG_INFO_DIRS}"
   '';
 })

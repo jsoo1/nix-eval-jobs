@@ -4,53 +4,43 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/release-21.11";
   inputs.flake-utils.url = "github:numtide/flake-utils";
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    { self
+    , nixpkgs
+    , flake-utils
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
+        nixVersion = nixpkgs.lib.fileContents ./.nix-version;
         pkgs = nixpkgs.legacyPackages.${system};
-        drvArgs = { srcDir = self; nix = pkgs.nix; };
+        inherit (pkgs) stdenv;
+        devShell = self.devShells.${system}.default;
+        drvArgs = {
+          srcDir = self;
+          nix = if nixVersion == "unstable" then pkgs.nixUnstable else pkgs.nixVersions."nix_${nixVersion}";
+        };
       in
-      rec {
+      {
         packages.nix-eval-jobs = pkgs.callPackage ./default.nix drvArgs;
 
-        checks =
-          let
-            mkVariant = nix: (packages.nix-eval-jobs.override {
-              inherit nix;
-            }).overrideAttrs (_: {
-              name = "nix-eval-jobs-${nix.version}";
-              inherit (nix) version;
-            });
-          in
-          {
+        checks.treefmt = stdenv.mkDerivation {
+          name = "treefmt-check";
+          src = self;
+          nativeBuildInputs = devShell.nativeBuildInputs;
+          dontConfigure = true;
 
-            editorconfig = pkgs.runCommand "editorconfig-check"
-              {
-                nativeBuildInputs = [
-                  pkgs.editorconfig-checker
-                ];
-              } ''
-              editorconfig-checker ${self}
-              touch $out
-            '';
+          inherit (devShell) NODE_PATH;
 
-            nixpkgs-fmt = pkgs.runCommand "fmt-check"
-              {
-                nativeBuildInputs = [
-                  pkgs.nixpkgs-fmt
-                ];
-              } ''
-              nixpkgs-fmt --check .
-              touch $out
-            '';
+          buildPhase = ''
+            env HOME=$(mktemp -d) treefmt --fail-on-change
+          '';
 
-            build = mkVariant pkgs.nix;
-            build-unstable = mkVariant pkgs.nixUnstable;
-          };
+          installPhase = "touch $out";
+        };
 
-        defaultPackage = self.packages.${system}.nix-eval-jobs;
-        devShell = pkgs.callPackage ./shell.nix drvArgs;
-
+        packages.default = self.packages.${system}.nix-eval-jobs;
+        devShells.default = pkgs.callPackage ./shell.nix drvArgs;
       }
     );
 }
